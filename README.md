@@ -589,8 +589,7 @@ The project achieved stable operation while multiple peripherals operated concur
 
 ## Video Demonstration
 
-[Watch the demonstration video on YouTube](https://youtu.be/A2sVNCb3_ys)
-
+[Watch the demonstration video on YouTube](https://youtu.be/or_t1qxhPF0)
 ---
 
 ## Repository Contents
