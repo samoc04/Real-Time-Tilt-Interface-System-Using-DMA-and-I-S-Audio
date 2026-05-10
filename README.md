@@ -1,7 +1,7 @@
 # Embedded-Tilt-LED-Ring-Audio-System
 
 STM32 embedded system integrating WS2812 LED control, BMI160 accelerometer sensing, SAI/I²S audio playback, DMA-based ADC sampling, PWM control, timer interrupts, and UART debugging.
-
+![Working Project](Speaker_debugging_and_initial_configuration.jpeg)
 ![Working Project](working_project.jpeg)
 
 ---
