@@ -6,27 +6,35 @@
 
 #include "eeng1030_lib.h"
 #include "i2c.h"
+#include "audio_data.h"
 
 #define NUM_LEDS   16
 #define WS_PIN     7
-#define BTN_PIN    9
 
-#define AUDIO_DIN_PIN   6
-#define AUDIO_BCLK_PIN  5
-#define AUDIO_LRC_PIN   4
-#define AUDIO_LIMIT     750
+#define BTN_PIN    3       // button moved to PB3
 
 #define TOP_LED    0
 #define DEAD_ZONE  180
 #define SAVE_THRESHOLD 200
 
+#define AUDIO_LIMIT 750
+#define ADC_BUF_SIZE 32
+
 uint16_t response;
+
 int32_t X_g, Y_g, Z_g;
 int32_t X_filt = 0, Y_filt = 0, Z_filt = 0;
 
 int saved_mode = 0;
 int saved_centre_led = 0;
 int save_latched = 0;
+
+volatile uint16_t adc_buffer[ADC_BUF_SIZE];
+volatile uint16_t adc_average = 0;
+volatile uint8_t timer_flag = 0;
+
+const int16_t tone_silent[AUDIO_LENGTH] = {0};
+const int16_t *current_tone = 0;
 
 static const int16_t dir_x[NUM_LEDS] = {
      0,  383,  707,  924, 1000,  924,  707,  383,
@@ -50,10 +58,15 @@ static int button_pressed(void);
 static void dwt_init(void);
 static void delay_us(uint32_t us);
 
-static void initADC(void);
-static int readADC(int chan);
+static void initADC_DMA(void);
 static void initTimer2PWM(void);
 static void setTimer2Duty(int duty);
+static void initTIM6Interrupt(void);
+
+static void initSAI(void);
+static void initAudioDMA(const int16_t *tone);
+static void set_audio_tone(const int16_t *tone);
+static void update_audio_warning(void);
 
 static void ws2812_reset(void);
 static void ws2812_send_bit(uint8_t bit);
@@ -63,16 +76,8 @@ static void ws2812_send_pixel(uint8_t g, uint8_t r, uint8_t b);
 static int32_t read_bmi160_axis(uint8_t reg_low);
 static int wrap_led(int n);
 static int get_pointer_led(int32_t x, int32_t y, int32_t z);
-static void show_live_and_saved(int live_centre_led, int saved_centre_led, int saved_active, uint8_t g, uint8_t r, uint8_t b);
-
-static void audio_init(void);
-static void play_300hz_beep(void);
-static void audio_send_stereo_sample(int16_t sample);
-static void audio_send_16(uint16_t value);
-static void audio_send_bit(uint8_t bit);
-static void audio_pin_high(uint32_t pin);
-static void audio_pin_low(uint32_t pin);
-static void audio_delay_cycles(volatile uint32_t d);
+static void show_live_and_saved(int live_centre_led, int saved_centre_led, int saved_active,
+                                uint8_t g, uint8_t r, uint8_t b);
 
 int main(void)
 {
@@ -86,18 +91,23 @@ int main(void)
     clock_init_80mhz();
     setup();
     initSerial(9600);
+
     gpio_init_ws2812();
     gpio_init_button();
     dwt_init();
 
-    pinMode(GPIOA, 0, 3);
+    // PA3 = TIM2_CH4 PWM output
     pinMode(GPIOA, 3, 2);
     GPIOA->AFR[0] &= ~(0xF << (4 * 3));
     GPIOA->AFR[0] |=  (1U << (4 * 3));
 
-    initADC();
+    initADC_DMA();
     initTimer2PWM();
-    audio_init();
+
+    initSAI();
+    initAudioDMA(tone_silent);
+
+    initTIM6Interrupt();
 
     ResetI2C();
 
@@ -108,8 +118,19 @@ int main(void)
 
     delay(1000000);
 
+    // start SAI after DMA is ready
+    SAI1_Block_A->CR1 |= (1 << 16);
+
+    printf("Project 2 final integration started\r\n");
+
     while (1)
     {
+        if (timer_flag)
+        {
+            timer_flag = 0;
+            printf("ADC average = %d\r\n", adc_average);
+        }
+
         uint8_t current_button_state = button_pressed();
 
         if ((current_button_state == 1) && (last_button_state == 0))
@@ -139,7 +160,7 @@ int main(void)
         Y_filt = (3 * Y_filt + Y_g) / 4;
         Z_filt = (3 * Z_filt + Z_g) / 4;
 
-        int pot_value = readADC(5);
+        int pot_value = adc_average;
         int centre_led = get_pointer_led(X_filt, Y_filt, Z_filt);
 
         if (pot_value <= SAVE_THRESHOLD)
@@ -185,20 +206,211 @@ int main(void)
             b_val = 0x00;
         }
 
+        update_audio_warning();
+
         printf("POT=%d X=%ld Y=%ld Z=%ld colour=%d saved=%d saved_led=%d live_led=%d\r\n",
-               pot_value, X_filt, Y_filt, Z_filt, colour_index, saved_mode, saved_centre_led, centre_led);
+               pot_value, X_filt, Y_filt, Z_filt,
+               colour_index, saved_mode, saved_centre_led, centre_led);
 
         show_live_and_saved(centre_led, saved_centre_led, saved_mode, g_val, r_val, b_val);
 
-        if (X_filt > AUDIO_LIMIT ||
-            X_filt < -AUDIO_LIMIT ||
-            Y_filt > AUDIO_LIMIT ||
-            Y_filt < -AUDIO_LIMIT)
+        delay(80000);
+    }
+}
+
+static void update_audio_warning(void)
+{
+    if (X_filt > AUDIO_LIMIT ||
+        X_filt < -AUDIO_LIMIT ||
+        Y_filt > AUDIO_LIMIT ||
+        Y_filt < -AUDIO_LIMIT)
+    {
+        set_audio_tone(audio_data);
+    }
+    else
+    {
+        set_audio_tone(tone_silent);
+    }
+}
+
+static void set_audio_tone(const int16_t *tone)
+{
+    if (current_tone == tone)
+        return;
+
+    current_tone = tone;
+
+    DMA2_Channel6->CCR &= ~(1 << 0);
+    SAI1_Block_A->CR1 &= ~(1 << 16);
+
+    DMA2_Channel6->CMAR = (uint32_t)tone;
+    DMA2_Channel6->CNDTR = AUDIO_LENGTH;
+
+    DMA2_Channel6->CCR |= (1 << 0);
+    SAI1_Block_A->CR1 |= (1 << 16);
+}
+
+static void initSAI(void)
+{
+    // PA8  = BCLK
+    // PA9  = LRC
+    // PA10 = DIN
+
+    pinMode(GPIOA, 8, 2);
+    pinMode(GPIOA, 9, 2);
+    pinMode(GPIOA, 10, 2);
+
+    selectAlternateFunction(GPIOA, 8, 13);
+    selectAlternateFunction(GPIOA, 9, 13);
+    selectAlternateFunction(GPIOA, 10, 13);
+
+    RCC->APB2ENR |= (1 << 21);
+
+    RCC->CR &= ~(1 << 26);
+    while (RCC->CR & (1 << 27)) {}
+
+    RCC->PLLSAI1CFGR =
+        (2 << 27) |
+        (37 << 8) |
+        (1 << 16);
+
+    RCC->CR |= (1 << 26);
+    while ((RCC->CR & (1 << 27)) == 0) {}
+
+    SAI1->GCR = (1 << 4);
+
+    SAI1_Block_A->CR1 = 0;
+    SAI1_Block_A->CR2 = 0;
+    SAI1_Block_A->SLOTR = 0;
+    SAI1_Block_A->FRCR = 0;
+
+    SAI1_Block_A->CR1 =
+        (7 << 5)  |
+        (3 << 20) |
+        (1 << 9);
+
+    SAI1_Block_A->SLOTR =
+        (1 << 8)  |
+        (1 << 16) |
+        (1 << 17) |
+        (1 << 7);
+
+    SAI1_Block_A->FRCR =
+        (1 << 18) |
+        (1 << 16) |
+        (15 << 8) |
+        (32 - 1);
+
+    SAI1_Block_A->CR1 |= (1 << 17);
+}
+
+static void initAudioDMA(const int16_t *tone)
+{
+    current_tone = tone;
+
+    RCC->AHB1ENR |= (1 << 1);
+
+    DMA2_Channel6->CCR &= ~(1 << 0);
+
+    DMA2_Channel6->CMAR = (uint32_t)tone;
+    DMA2_Channel6->CPAR = (uint32_t)&SAI1_Block_A->DR;
+    DMA2_Channel6->CNDTR = AUDIO_LENGTH;
+
+    DMA2_CSELR->CSELR &= ~(0xF << 20);
+    DMA2_CSELR->CSELR |=  (5 << 20);
+
+    DMA2_Channel6->CCR =
+        (1 << 11) |
+        (1 << 9)  |
+        (1 << 8)  |
+        (1 << 7)  |
+        (1 << 5)  |
+        (1 << 0);
+}
+
+static void initADC_DMA(void)
+{
+    // PA0 = ADC1_IN5 on STM32L432KC
+    pinMode(GPIOA, 0, 3);
+
+    RCC->AHB2ENR |= (1 << 13);
+    RCC->AHB1ENR |= (1 << 0);
+
+    if (ADC1->CR & ADC_CR_ADEN)
+    {
+        ADC1->CR |= ADC_CR_ADDIS;
+        while (ADC1->CR & ADC_CR_ADEN) {}
+    }
+
+    ADC1->CR &= ~ADC_CR_DEEPPWD;
+    ADC1->CR |= ADC_CR_ADVREGEN;
+    delay(10000);
+
+    ADC1->CR |= ADC_CR_ADCAL;
+    while (ADC1->CR & ADC_CR_ADCAL) {}
+
+    DMA1_Channel1->CCR &= ~(1 << 0);
+
+    DMA1_Channel1->CPAR = (uint32_t)&ADC1->DR;
+    DMA1_Channel1->CMAR = (uint32_t)adc_buffer;
+    DMA1_Channel1->CNDTR = ADC_BUF_SIZE;
+
+    DMA1_CSELR->CSELR &= ~(0xF << 0);
+
+    DMA1_Channel1->CCR =
+        (1 << 10) |
+        (1 << 8)  |
+        (1 << 7)  |
+        (1 << 5);
+
+    DMA1_Channel1->CCR |= (1 << 0);
+
+    ADC1->CFGR = 0;
+    ADC1->CFGR |= ADC_CFGR_CONT;
+    ADC1->CFGR |= ADC_CFGR_DMAEN;
+    ADC1->CFGR |= ADC_CFGR_DMACFG;
+
+    ADC1->SMPR1 &= ~(7 << (5 * 3));
+    ADC1->SMPR1 |=  (7 << (5 * 3));
+
+    ADC1->SQR1 = 0;
+    ADC1->SQR1 |= (5 << 6);
+
+    ADC1->CR |= ADC_CR_ADEN;
+    while (!(ADC1->ISR & ADC_ISR_ADRDY)) {}
+
+    ADC1->CR |= ADC_CR_ADSTART;
+}
+
+static void initTIM6Interrupt(void)
+{
+    RCC->APB1ENR1 |= (1 << 4);
+
+    TIM6->PSC = 8000 - 1;
+    TIM6->ARR = 1000 - 1;
+
+    TIM6->DIER |= (1 << 0);
+
+    NVIC_EnableIRQ(TIM6_DAC_IRQn);
+
+    TIM6->CR1 |= (1 << 0);
+}
+
+void TIM6_DAC_IRQHandler(void)
+{
+    if (TIM6->SR & (1 << 0))
+    {
+        TIM6->SR &= ~(1 << 0);
+
+        uint32_t sum = 0;
+
+        for (int i = 0; i < ADC_BUF_SIZE; i++)
         {
-            play_300hz_beep();
+            sum += adc_buffer[i];
         }
 
-        delay(80000);
+        adc_average = sum / ADC_BUF_SIZE;
+        timer_flag = 1;
     }
 }
 
@@ -259,7 +471,8 @@ static int get_pointer_led(int32_t x, int32_t y, int32_t z)
     return wrap_led(TOP_LED + best_led);
 }
 
-static void show_live_and_saved(int live_centre_led, int saved_centre_led, int saved_active, uint8_t g, uint8_t r, uint8_t b)
+static void show_live_and_saved(int live_centre_led, int saved_centre_led, int saved_active,
+                                uint8_t g, uint8_t r, uint8_t b)
 {
     int live_a = wrap_led(live_centre_led - 1);
     int live_b = wrap_led(live_centre_led);
@@ -324,6 +537,7 @@ void initSerial(uint32_t baudrate)
     USART2->CR2 = 0;
     USART2->CR3 = (1 << 12);
     USART2->BRR = 80000000 / baudrate;
+
     USART2->CR1 = (1 << 3);
     USART2->CR1 |= (1 << 2);
     USART2->CR1 |= (1 << 0);
@@ -357,7 +571,6 @@ void eputc(char c)
 static void clock_init_80mhz(void)
 {
     RCC->CR |= RCC_CR_HSION;
-
     while (!(RCC->CR & RCC_CR_HSIRDY)) {}
 
     FLASH->ACR |= FLASH_ACR_LATENCY_4WS;
@@ -370,7 +583,6 @@ static void clock_init_80mhz(void)
         RCC_PLLCFGR_PLLREN;
 
     RCC->CR |= RCC_CR_PLLON;
-
     while (!(RCC->CR & RCC_CR_PLLRDY)) {}
 
     RCC->CFGR &= ~RCC_CFGR_SW;
@@ -400,16 +612,17 @@ static void gpio_init_ws2812(void)
 
 static void gpio_init_button(void)
 {
-    RCC->AHB2ENR |= RCC_AHB2ENR_GPIOAEN;
+    RCC->AHB2ENR |= RCC_AHB2ENR_GPIOBEN;
 
-    GPIOA->MODER &= ~(3U << (BTN_PIN * 2));
-    GPIOA->PUPDR &= ~(3U << (BTN_PIN * 2));
-    GPIOA->PUPDR |=  (1U << (BTN_PIN * 2));
+    GPIOB->MODER &= ~(3U << (BTN_PIN * 2));
+
+    GPIOB->PUPDR &= ~(3U << (BTN_PIN * 2));
+    GPIOB->PUPDR |=  (1U << (BTN_PIN * 2));
 }
 
 static int button_pressed(void)
 {
-    if ((GPIOA->IDR & (1U << BTN_PIN)) == 0)
+    if ((GPIOB->IDR & (1U << BTN_PIN)) == 0)
         return 1;
     else
         return 0;
@@ -473,39 +686,6 @@ static void ws2812_send_pixel(uint8_t g, uint8_t r, uint8_t b)
     ws2812_send_byte(b);
 }
 
-static void initADC(void)
-{
-    RCC->AHB2ENR |= (1 << 13);
-    RCC->CCIPR |= (1 << 29) | (1 << 28);
-    ADC1_COMMON->CCR = ((0b01) << 16) + (1 << 22);
-
-    ADC1->CR = (1 << 28);
-    delay(100);
-
-    ADC1->CR |= (1 << 31);
-
-    while (ADC1->CR & (1 << 31)) {}
-
-    ADC1->CFGR = (1 << 31);
-}
-
-static int readADC(int chan)
-{
-    ADC1->SQR1 = 0;
-    ADC1->SQR1 |= (chan << 6);
-
-    ADC1->ISR = (1 << 3);
-    ADC1->CR |= (1 << 0);
-
-    while ((ADC1->ISR & (1 << 0)) == 0) {}
-
-    ADC1->CR |= (1 << 2);
-
-    while ((ADC1->ISR & (1 << 3)) == 0) {}
-
-    return ADC1->DR;
-}
-
 static void initTimer2PWM(void)
 {
     RCC->APB1ENR1 |= (1 << 0);
@@ -541,97 +721,4 @@ static void setTimer2Duty(int duty)
 
     arrvalue = (duty * (TIM2->ARR + 1)) / 4095;
     TIM2->CCR4 = arrvalue;
-}
-
-static void audio_pin_high(uint32_t pin)
-{
-    GPIOA->BSRR = (1U << pin);
-}
-
-static void audio_pin_low(uint32_t pin)
-{
-    GPIOA->BSRR = (1U << (pin + 16));
-}
-
-static void audio_delay_cycles(volatile uint32_t d)
-{
-    while (d--) {}
-}
-
-static void audio_send_bit(uint8_t bit)
-{
-    if (bit)
-        audio_pin_high(AUDIO_DIN_PIN);
-    else
-        audio_pin_low(AUDIO_DIN_PIN);
-
-    audio_pin_high(AUDIO_BCLK_PIN);
-    audio_delay_cycles(20);
-
-    audio_pin_low(AUDIO_BCLK_PIN);
-    audio_delay_cycles(20);
-}
-
-static void audio_send_16(uint16_t value)
-{
-    for (int i = 15; i >= 0; i--)
-    {
-        audio_send_bit((value >> i) & 1U);
-    }
-}
-
-static void audio_send_stereo_sample(int16_t sample)
-{
-    audio_pin_low(AUDIO_LRC_PIN);
-    audio_send_16((uint16_t)sample);
-
-    audio_pin_high(AUDIO_LRC_PIN);
-    audio_send_16((uint16_t)sample);
-}
-
-static void audio_init(void)
-{
-    GPIOA->MODER &= ~(
-        (3U << (AUDIO_DIN_PIN * 2)) |
-        (3U << (AUDIO_BCLK_PIN * 2)) |
-        (3U << (AUDIO_LRC_PIN * 2))
-    );
-
-    GPIOA->MODER |= (
-        (1U << (AUDIO_DIN_PIN * 2)) |
-        (1U << (AUDIO_BCLK_PIN * 2)) |
-        (1U << (AUDIO_LRC_PIN * 2))
-    );
-
-    GPIOA->OTYPER &= ~(
-        (1U << AUDIO_DIN_PIN) |
-        (1U << AUDIO_BCLK_PIN) |
-        (1U << AUDIO_LRC_PIN)
-    );
-
-    GPIOA->OSPEEDR |= (
-        (3U << (AUDIO_DIN_PIN * 2)) |
-        (3U << (AUDIO_BCLK_PIN * 2)) |
-        (3U << (AUDIO_LRC_PIN * 2))
-    );
-
-    audio_pin_low(AUDIO_DIN_PIN);
-    audio_pin_low(AUDIO_BCLK_PIN);
-    audio_pin_low(AUDIO_LRC_PIN);
-}
-
-static void play_300hz_beep(void)
-{
-    for (int cycle = 0; cycle < 20; cycle++)
-    {
-        for (int i = 0; i < 200; i++)
-        {
-            audio_send_stereo_sample(30000);
-        }
-
-        for (int i = 0; i < 200; i++)
-        {
-            audio_send_stereo_sample(-30000);
-        }
-    }
 }
