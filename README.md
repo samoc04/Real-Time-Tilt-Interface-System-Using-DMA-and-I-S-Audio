@@ -6,7 +6,7 @@ STM32 embedded system integrating WS2812 LED control, BMI160 accelerometer sensi
 
 ---
 
-# ## Overview
+## Overview
 
 This project expands the original tilt-controlled WS2812 LED ring system from Project 1 into a more advanced embedded system integrating real-time digital audio playback, DMA-driven peripherals, interrupt-driven processing, and multi-peripheral operation on the STM32L432KC microcontroller.
 
@@ -27,7 +27,7 @@ The project demonstrates embedded systems integration using multiple peripherals
 
 ---
 
-# ## Objectives
+## Objectives
 
 The objectives of this project were:
 
@@ -44,7 +44,7 @@ The objectives of this project were:
 
 ---
 
-# ## Final System Features
+## Final System Features
 
 The final integrated system includes:
 
@@ -64,7 +64,7 @@ The final integrated system includes:
 
 ---
 
-# ## Hardware Used
+## Hardware Used
 
 - STM32L432KC Nucleo board
 - BMI160 accelerometer
@@ -73,13 +73,13 @@ The final integrated system includes:
 - 8 Ω speaker
 - Potentiometer
 - Push button
-- 330 Ω resistor
+- 330 Ω resistor (WS2812 data line protection)
 - Breadboard and jumper wires
 - Oscilloscope for waveform debugging
 
 ---
 
-# ## Peripheral Usage
+## Peripheral Usage
 
 | Peripheral | Purpose |
 |---|---|
@@ -96,19 +96,17 @@ The final integrated system includes:
 
 ---
 
-# ## System Wiring
+## System Wiring
 
-## WS2812 LED Ring
+### WS2812 LED Ring
 
 | LED Ring | STM32 |
 |---|---|
-| DIN | PA7 |
+| DIN | PA7 (via 330 Ω resistor) |
 | VCC | 5 V |
 | GND | GND |
 
----
-
-## BMI160 Accelerometer
+### BMI160 Accelerometer
 
 | BMI160 | STM32 |
 |---|---|
@@ -117,9 +115,7 @@ The final integrated system includes:
 | VCC | 3.3 V |
 | GND | GND |
 
----
-
-## MAX98357A I²S Amplifier
+### MAX98357A I²S Amplifier
 
 | MAX98357A | STM32 |
 |---|---|
@@ -130,9 +126,7 @@ The final integrated system includes:
 | GND | GND |
 | SD | 5 V |
 
----
-
-## Potentiometer
+### Potentiometer
 
 | Potentiometer Pin | Connection |
 |---|---|
@@ -140,9 +134,7 @@ The final integrated system includes:
 | Side 2 | GND |
 | Middle | PA0 |
 
----
-
-## Push Button
+### Push Button
 
 | Button | STM32 |
 |---|---|
@@ -150,7 +142,7 @@ The final integrated system includes:
 
 ---
 
-# ## Software Architecture
+## Software Architecture
 
 The project software was developed incrementally across multiple stages.
 
@@ -171,13 +163,13 @@ A low-level register-based programming approach was used throughout the project 
 
 ---
 
-# ## Task 1 — Re-establishing the Project 1 System
+## Task 1 — Re-establishing the Project 1 System
 
-## Goal
+### Goal
 
 Restore the fully working tilt-controlled LED ring system from Project 1.
 
-## Functionality Restored
+### Functionality Restored
 
 - WS2812 LED ring control
 - BMI160 accelerometer communication
@@ -189,7 +181,7 @@ Restore the fully working tilt-controlled LED ring system from Project 1.
 - Saved-position feature
 - UART debug output
 
-## Result
+### Result
 
 The original Project 1 system was successfully restored and verified.
 
@@ -206,13 +198,13 @@ This stage provided the working baseline used for all later project integration.
 
 ---
 
-# ## Task 2 — Configuring the SAI / I²S Speaker Output
+## Task 2 — Configuring the SAI / I²S Speaker Output
 
-## Goal
+### Goal
 
 Configure the STM32L432 SAI peripheral for digital audio transmission to the MAX98357A I²S amplifier.
 
-## Implementation
+### Implementation
 
 The following pins were configured for SAI alternate functions:
 
@@ -231,7 +223,7 @@ PLLSAI1 was configured to generate the audio clock, while SAI1 Block A was confi
 
 DMA2 Channel 6 transferred audio samples directly from memory to the SAI data register.
 
-## Result
+### Result
 
 Digital audio output was successfully transmitted to the MAX98357A amplifier using SAI and DMA.
 
@@ -239,25 +231,25 @@ The CPU was not required to manually transmit samples during playback, confirmin
 
 ---
 
-# ## Task 3 — Audio Playback Verification
+## Task 3 — Audio Playback Verification
 
-## Goal
+### Goal
 
 Verify successful audio playback through the MAX98357A speaker system.
 
-## Implementation
+### Implementation
 
 Audio sample arrays stored in memory were streamed continuously to the SAI peripheral using DMA circular mode.
 
 Different waveform buffers were tested, including:
 
 - generated tone data
-- converted WAV sample data
-- sine wave lookup tables
+- sine wave lookup tables generated in MATLAB
+- multiple frequency waveforms
 
 PB3 was used as a heartbeat GPIO output during testing to confirm that the CPU continued executing while DMA handled audio streaming independently.
 
-## Result
+### Result
 
 Audio playback was successfully produced through the speaker.
 
@@ -273,20 +265,20 @@ Testing also showed that incorrect sample formatting or DMA lengths could produc
 
 ---
 
-# ## Task 4 — Timer-Based System Control
+## Task 4 — Timer-Based System Control
 
-## Goal
+### Goal
 
 Introduce interrupt-driven system timing using a hardware timer.
 
-## Implementation
+### Implementation
 
-TIM6 was configured to generate periodic interrupts.
+TIM6 was configured to generate periodic interrupts. TIM2 remained dedicated to PWM generation only.
 
 The interrupt routine:
 
 - averaged the DMA ADC buffer
-- updated adc_average
+- updated `adc_average`
 - set a software flag for the main loop
 
 The interrupt handler used in the final system was:
@@ -312,9 +304,7 @@ void TIM6_DAC_IRQHandler(void)
 }
 ```
 
-TIM2 remained dedicated to PWM generation only.
-
-## Result
+### Result
 
 Interrupt-driven timing was successfully implemented using TIM6.
 
@@ -331,13 +321,13 @@ This demonstrated successful interrupt-based multitasking behaviour.
 
 ---
 
-# ## Task 5 — DMA-Based ADC Sampling
+## Task 5 — DMA-Based ADC Sampling
 
-## Goal
+### Goal
 
 Implement continuous ADC sampling using DMA and analogue potentiometer input.
 
-## Implementation
+### Implementation
 
 A potentiometer connected to PA0 was sampled continuously using ADC1.
 
@@ -349,20 +339,13 @@ volatile uint16_t adc_buffer[ADC_BUF_SIZE];
 
 Continuous conversion mode and DMA circular mode were enabled.
 
-TIM6 interrupts periodically averaged the buffer contents and updated:
+TIM6 interrupts periodically averaged the buffer contents and updated `adc_average`.
 
-```c
-adc_average
-```
-
-## Result
+### Result
 
 The ADC continuously sampled the potentiometer without CPU polling.
 
-The potentiometer smoothly adjusted the ADC reading from approximately:
-
-- 0
-- to 4095
+The potentiometer smoothly adjusted the ADC reading from approximately 0 to 4095.
 
 DMA-based sampling significantly reduced CPU overhead while improving responsiveness.
 
@@ -370,15 +353,15 @@ UART output confirmed stable averaged ADC readings during operation.
 
 ---
 
-# ## Task 6 — Audio Response Based on Tilt Direction
+## Task 6 — Audio Response Based on Tilt Direction
 
-## Goal
+### Goal
 
 Use accelerometer tilt direction to control audio playback behaviour.
 
-## Implementation
+### Implementation
 
-The system monitored filtered accelerometer values:
+The system monitored filtered accelerometer values and activated a warning tone whenever excessive tilt was detected:
 
 ```c
 static void update_audio_warning(void)
@@ -403,18 +386,11 @@ The warning tone activated whenever excessive tilt exceeded:
 #define AUDIO_LIMIT 750
 ```
 
-DMA audio playback continued continuously while the active audio buffer was switched dynamically.
+DMA audio playback continued continuously while the active audio buffer was switched dynamically using `set_audio_tone()`.
 
-## Result
+### Result
 
-The speaker successfully produced a 300 Hz warning tone whenever excessive tilt was detected.
-
-The warning tone activated correctly for excessive:
-
-- left tilt
-- right tilt
-- forward tilt
-- backward tilt
+The speaker successfully produced a 300 Hz warning tone whenever excessive tilt was detected in the X or Y axis.
 
 The speaker muted automatically when tilt returned within the safe operating region.
 
@@ -427,13 +403,13 @@ This confirmed successful integration of:
 
 ---
 
-# ## Task 7 — Final Integration and Optimisation
+## Task 7 — Final Integration and Optimisation
 
-## Goal
+### Goal
 
 Integrate all subsystems into one stable real-time embedded system.
 
-## Integrated Features
+### Integrated Features
 
 The final system combined:
 
@@ -447,7 +423,7 @@ The final system combined:
 - button input
 - saved-position mode
 
-## Result
+### Result
 
 The final integrated system successfully retained all original Project 1 functionality while adding a tilt-triggered audio warning feature.
 
@@ -455,9 +431,9 @@ The WS2812 LED ring continued to display the live tilt direction using a 3-LED p
 
 A 300 Hz warning tone was produced through the MAX98357A speaker whenever excessive tilt was detected in the X or Y direction. The tone activated once the filtered accelerometer values exceeded the defined AUDIO_LIMIT threshold of 750.
 
-Audio generation used the SAI peripheral configured in I²S mode, with DMA2 Channel 6 continuously transferring samples from the audio_data waveform table to the SAI data register in circular mode. The tone_silent buffer was played during normal operation, muting the speaker when tilt was within the safe range.
+Audio generation used the SAI peripheral configured in I²S mode, with DMA2 Channel 6 continuously transferring samples from the `audio_data` waveform table to the SAI data register in circular mode. The `tone_silent` buffer was played during normal operation, muting the speaker when tilt was within the safe range.
 
-ADC sampling was performed continuously using DMA1 Channel 1 in circular mode, filling a 32-sample buffer from the potentiometer on PA0. TIM6 generated a periodic interrupt using TIM6_DAC_IRQHandler which averaged the ADC buffer and set a flag for the main loop to print the current ADC value over UART.
+ADC sampling was performed continuously using DMA1 Channel 1 in circular mode, filling a 32-sample buffer from the potentiometer on PA0. TIM6 generated a periodic interrupt using `TIM6_DAC_IRQHandler` which averaged the ADC buffer and set a flag for the main loop to print the current ADC value over UART.
 
 The button was relocated to PB3 to avoid conflicts with the SAI audio pins on PA8, PA9 and PA10.
 
@@ -475,17 +451,13 @@ The final system remained stable, responsive, and fully functional during contin
 
 ---
 
-# ## WS2812 Timing and DWT Cycle Counter
+## WS2812 Timing and DWT Cycle Counter
 
 The WS2812B LED protocol requires highly accurate timing.
 
 Direct GPIO control together with the DWT cycle counter was used to generate the required waveform timing.
 
-At 80 MHz:
-
-- 1 cycle = 12.5 ns
-
-WS2812 timings:
+At 80 MHz, 1 cycle = 12.5 ns.
 
 | Bit Type | High Time | Low Time |
 |---|---|---|
@@ -496,9 +468,9 @@ The DWT cycle counter provided accurate microsecond timing without relying on so
 
 ---
 
-# ## Testing and Debugging
+## Testing and Debugging
 
-## Software Debugging
+### Software Debugging
 
 - UART serial output
 - ADC value monitoring
@@ -506,13 +478,13 @@ The DWT cycle counter provided accurate microsecond timing without relying on so
 - DMA verification
 - timer flag monitoring
 
-## Hardware Debugging
+### Hardware Debugging
 
 - oscilloscope verification of WS2812 waveform
 - verification of I²S clock signals
 - confirmation of SAI audio output
 
-## Incremental Testing
+### Incremental Testing
 
 Each subsystem was verified independently before full integration:
 
@@ -528,7 +500,7 @@ Each subsystem was verified independently before full integration:
 
 ---
 
-# ## Circuit Schematic
+## Circuit Schematic
 
 A full schematic was created using KiCad.
 
@@ -547,7 +519,7 @@ The schematic includes:
 
 ---
 
-# ## Development Log
+## Development Log
 
 A detailed development and testing log is included in the repository.
 
@@ -565,7 +537,7 @@ The test log documents:
 
 ---
 
-# ## GitHub and Version Control
+## GitHub and Version Control
 
 GitHub was used throughout development for:
 
@@ -579,7 +551,7 @@ The repository documents the evolution of the project from the original Project 
 
 ---
 
-# ## Ethical Considerations
+## Ethical Considerations
 
 This project demonstrates embedded systems concepts commonly used in:
 
@@ -594,7 +566,7 @@ The project also demonstrates the importance of structured testing and increment
 
 ---
 
-# ## Results Summary
+## Results Summary
 
 The final system successfully demonstrated:
 
@@ -612,13 +584,13 @@ The project achieved stable operation while multiple peripherals operated concur
 
 ---
 
-# ## Video Demonstration
+## Video Demonstration
 
 [Watch the demonstration video on YouTube](https://youtu.be/A2sVNCb3_ys)
 
 ---
 
-# ## Repository Contents
+## Repository Contents
 
 | File | Description |
 |---|---|
