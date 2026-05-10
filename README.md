@@ -2,6 +2,8 @@
 
 STM32 embedded system integrating WS2812 LED control, BMI160 accelerometer sensing, SAI/I²S audio playback, DMA-based ADC sampling, PWM control, timer interrupts, and UART debugging.
 
+![Speaker in Final Project](speaker_in_final_proj.jpg)
+
 ![Speaker Debugging and Initial Configuration](Speaker_debugging_and_initial_configuration.jpg)
 
 ![Working Project](working_project.jpeg)
